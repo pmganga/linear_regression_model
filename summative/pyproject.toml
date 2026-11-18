@@ -17,5 +17,6 @@ dependencies = [
 dev = [
     "ipykernel>=7.4.0",
     "matplotlib>=3.11.2",
+    "nbconvert>=7.17.2",
     "seaborn>=0.13.2",
 ]
