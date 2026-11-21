@@ -1,13 +1,7 @@
 """AutismCare Diagnosis Age API.
 
-Predicts the age (in years) at which a child is diagnosed with autism,
-so outreach teams can contact families at risk of a late diagnosis first.
-
-Endpoints:
-    GET  /         short description of the API
-    POST /predict  predict the diagnosis age for one child
-    POST /retrain  upload a CSV of new children and retrain the model
-    GET  /docs     Swagger UI, made automatically by FastAPI
+Predicts the age at which a child is diagnosed with autism.
+Endpoints: /predict, /retrain and /docs.
 """
 
 import io
@@ -40,8 +34,8 @@ YesNo = Literal["yes", "no"]
 class ChildInput(BaseModel):
     """The 10 inputs for one child. All are required."""
 
-    # strict=True: a wrong type, such as the text "150" instead of the number 150, is rejected.
-    # extra="forbid": fields the model does not use are rejected.
+    # strict=True: reject wrong types, e.g. "150" as text
+    # extra="forbid": reject unknown fields
     model_config = ConfigDict(
         strict=True,
         extra="forbid",
@@ -79,9 +73,9 @@ class ChildInput(BaseModel):
 
 
 class TrainingRow(ChildInput):
-    """One row of a retraining CSV: the 10 inputs plus the known diagnosis age."""
+    """One CSV row: the 10 inputs plus the diagnosis age."""
 
-    # CSV values arrive as text, so allow conversion to numbers. Ignore any extra columns.
+    # CSV values are text, so allow conversion. Ignore extra columns.
     model_config = ConfigDict(strict=False, extra="ignore")
     diagnosis_age: float = Field(ge=0, le=17, allow_inf_nan=False, description="Age when first told the child had autism (years)")
 
@@ -110,13 +104,13 @@ def load_model(path=MODEL_PATH):
 
 
 def predict_diagnosis_age(child, model):
-    """Predict the diagnosis age (years) for one child. Same function as in the notebook."""
+    """Predict the diagnosis age for one child (same as the notebook)."""
     row = pd.DataFrame([child]) if isinstance(child, dict) else child
     return float(model.predict(row[FEATURES])[0])
 
 
-model = load_model()           # load the model once, when the API starts
-model_lock = threading.Lock()  # lets only one request use or replace the model at a time
+model = load_model()           # load the model once at startup
+model_lock = threading.Lock()  # one request at a time can use the model
 
 
 # --- App and CORS ---
@@ -131,19 +125,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS decides which websites may call this API from a browser.
+# CORS: which websites can call this API from a browser.
+# Allowed: our Render site and the local Flutter web page, with GET and POST only.
+# Blocked: all other websites (no "*"), other methods and cookies, to keep the API safe.
 # The mobile app is not a browser, so CORS does not affect it.
 app.add_middleware(
     CORSMiddleware,
-    # Only our Render site and the local Flutter web test page. No "*", so other websites are blocked.
     allow_origins=[
         "https://autism-diagnosis-age-api.onrender.com",
         "http://localhost:5000",
         "http://127.0.0.1:5000",
     ],
-    allow_methods=["GET", "POST"],               # the only methods our endpoints use
-    allow_headers=["Content-Type", "Accept"],    # enough for JSON and file uploads
-    allow_credentials=False,                     # no logins or cookies, so none are sent
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Accept"],
+    allow_credentials=False,
 )
 
 
@@ -172,11 +167,10 @@ def predict(child: ChildInput):
 
 @app.post("/retrain", response_model=RetrainOutput)
 async def retrain(file: UploadFile = File(description="CSV with the 10 input columns plus diagnosis_age")):
-    """Upload a CSV of new children. The model is retrained on its original data plus the new rows,
-    and /predict uses the new model straight away."""
+    """Upload a CSV of new children. The model retrains on old + new data, and /predict uses it right away."""
     global model
 
-    # Check the file: it must be a readable CSV with all the columns and at least one row
+    # Check the file
     if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a .csv file.")
     try:
@@ -190,12 +184,12 @@ async def retrain(file: UploadFile = File(description="CSV with the 10 input col
     if new_data.empty:
         raise HTTPException(status_code=400, detail="The CSV has no rows.")
 
-    # Check every row with the same rules as /predict. Empty cells become None, so they are reported as missing.
+    # Check each row with the /predict rules (empty cells count as missing)
     records = new_data[FEATURES + [TARGET]].astype(object).where(new_data[FEATURES + [TARGET]].notna(), None)
     try:
         TypeAdapter(list[TrainingRow]).validate_python(records.to_dict(orient="records"))
     except ValidationError as error:
-        # Show at most 10 problems. Row numbers match the CSV file (the header is row 1).
+        # Show up to 10 errors. "+ 2" makes row numbers match the CSV file.
         problems = [
             f"row {err['loc'][0] + 2}, column '{err['loc'][1]}': {err['msg']}" for err in error.errors()[:10]
         ]
@@ -210,16 +204,16 @@ async def retrain(file: UploadFile = File(description="CSV with the 10 input col
         training_data = pd.concat([old_model.training_data_, new_rows], ignore_index=True)
         test_data = old_model.test_data_
 
-        # Retrain a copy of the model on the original training data plus the new rows
+        # Retrain on the old data plus the new rows
         new_model = clone(old_model).fit(training_data[FEATURES], training_data[TARGET])
         new_model.training_data_ = training_data
         new_model.test_data_ = test_data
 
-        # Score the old and new model on the same test set
+        # Compare the old and new model on the same test set
         mse_before = mean_squared_error(test_data[TARGET], old_model.predict(test_data[FEATURES]))
         mse_after = mean_squared_error(test_data[TARGET], new_model.predict(test_data[FEATURES]))
 
-        # Start using the new model. It is kept in memory only, so a restart loads best_model.pkl again.
+        # Use the new model now. A restart reloads best_model.pkl.
         model = new_model
 
     return RetrainOutput(
