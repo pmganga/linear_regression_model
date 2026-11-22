@@ -21,7 +21,7 @@ Swagger UI: **https://autism-diagnosis-age-api.onrender.com/docs**
 The service is on Render's free plan, so the first request after a quiet period can take up to a minute while it wakes up.
 
 ## Video demo
-YouTube: **[ADD YOUTUBE LINK HERE]**
+YouTube: **https://youtu.be/X2_keELZejs**
 
 ## How to run the mobile app
 1. Install the [Flutter SDK](https://docs.flutter.dev/get-started/install) and Android Studio (for the Android SDK and emulator).
